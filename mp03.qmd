@@ -1,0 +1,780 @@
+---
+title: "Mini Project 03 : Visualizing and Maintaining the Green Canopy of NYC"
+author: "Lincon Chopra"
+engine: knitr
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    theme:
+      light: cosmo
+      dark: darkly
+    df-print: paged
+    code-fold: true
+execute:
+  echo: true
+  message: false
+  warning: false
+  cache: true
+---
+```{css}
+.indent-block-tab {
+text-indent: 2em;
+}
+```
+
+
+## Introduction
+::: {.indent-block-tab}
+  In this mini-project, I work with NYC datasets to explore how the city’s green canopy is spread across neighborhoods. The main goal is to build a clean, reproducible process that automatically downloads the spatial data, joins tree locations to council districts and creates clear visualizations of tree coverage.
+:::
+
+## Task 1: Download NYC City Council District Boundaries
+
+::: {.indent-block-tab}
+  In this task I will write a reusable function that downloads the NYC City Council district data; unzips it if necessary, and transforms the coordinates so it lines up with other spatial data. The function only downloads or unzips the file if it does not already exist in `data/mp03`. The transofrmed data can be veiewed below.
+:::
+
+
+```{r}
+library(tidyverse)  
+library(sf)         
+library(httr2)      
+library(glue)
+library(janitor)
+library(leaflet)
+
+set.seed(9750)
+
+download_council_districts <- function(
+  dest_dir = "data/mp03",
+  zip_url  = "https://s-media.nyc.gov/agencies/dcp/assets/files/zip/data-tools/bytes/city-council/nycc_25c.zip"
+) {
+  # create data directory if needed
+  if (!dir.exists(dest_dir)) {
+    dir.create(dest_dir, recursive = TRUE)
+  }
+
+  # paths for zip file and unzipped contents
+  zip_path  <- file.path(dest_dir, "nyc_council_districts.zip")
+  unzip_dir <- file.path(dest_dir, "nyc_council_districts")
+
+  # download zip only if it does not already exist
+  if (!file.exists(zip_path)) {
+    download.file(url = zip_url, destfile = zip_path, mode = "wb")
+  }
+
+  # check for existing shapefiles in unzip_dir
+  if (dir.exists(unzip_dir)) {
+    shp_files <- dir(unzip_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)
+  } else {
+    shp_files <- character(0)
+  }
+
+  # unzip only if we do not already have a shapefile
+  if (!dir.exists(unzip_dir) || length(shp_files) == 0) {
+    dir.create(unzip_dir, recursive = TRUE, showWarnings = FALSE)
+    unzip(zipfile = zip_path, exdir = unzip_dir)
+  }
+
+  # find shapefile path
+  shp_path <- dir(unzip_dir, pattern = "\\.shp$", full.names = TRUE, recursive = TRUE)[1]
+
+  # read shapefile as sf object
+  districts_raw <- sf::st_read(shp_path, quiet = TRUE)
+
+  # transform to WGS84 so it aligns with other data
+  districts_wgs84 <- districts_raw |>
+    sf::st_transform(crs = "WGS84")
+
+  # create district_id column if needed
+  if (!("district_id" %in% names(districts_wgs84))) {
+    idx <- which(grepl("coun", names(districts_wgs84), ignore.case = TRUE))[1]
+    if (!is.na(idx)) {
+      districts_wgs84$district_id <- districts_wgs84[[idx]]
+    }
+  }
+
+  # ensure district_id is integer
+  if ("district_id" %in% names(districts_wgs84)) {
+    districts_wgs84$district_id <- as.integer(districts_wgs84$district_id)
+  }
+
+  # return sf object
+  districts_wgs84
+}
+
+# run function to get council_sf
+council_sf <- download_council_districts()
+
+# quick check (no geometry)
+council_sf |>
+  sf::st_drop_geometry() |>
+  head()
+```
+## Task 2: Download Tree Points
+
+::: {.indent-block-tab}
+In this task, I write a function that downloads the NYC Forestry Tree Points directly from the NYC OpenData API using the `httr2` package. The function looks through the API and only downloads a file if it does not already exist. 
+:::
+
+```{r}
+download_tree_points <- function(
+  dest_dir    = "data/mp03",
+  base_url    = "https://data.cityofnewyork.us/resource/hn5i-inap.geojson",
+  chunk_limit = 50000  # number of rows per API request
+) {
+  # ensure base data directory exists
+  if (!dir.exists(dest_dir)) {
+    dir.create(dest_dir, recursive = TRUE)
+  }
+
+  # directory for raw GeoJSON chunks
+  raw_dir <- file.path(dest_dir, "tree_points_raw")
+  if (!dir.exists(raw_dir)) {
+    dir.create(raw_dir, recursive = TRUE)
+  }
+
+  # start at offset 0 and keep track of chunk file paths
+  offset     <- 0L
+  file_paths <- character()
+  total_rows <- 0L
+
+  # loop over API pages using $limit and $offset
+  repeat {
+    # build filename for this chunk
+    file_name <- glue::glue("treepoints_{offset}_{offset + chunk_limit - 1}.geojson")
+    file_path <- file.path(raw_dir, file_name)
+
+    # print progress about which chunk we are working on
+    message("Chunk starting at offset = ", offset)
+
+    # download this chunk only if file does not already exist
+    if (!file.exists(file_path)) {
+      message("  Downloading chunk to: ", file_path)
+      resp <- httr2::request(base_url) |>
+        httr2::req_url_query(`$limit` = chunk_limit,
+                             `$offset` = offset) |>
+        httr2::req_perform()
+
+      # save raw response body to disk
+      writeBin(httr2::resp_body_raw(resp), file_path)
+    } else {
+      message("  File already exists, skipping download.")
+    }
+
+    # read this chunk to see how many rows it contains
+    trees_chunk <- sf::st_read(file_path, quiet = TRUE)
+    n_rows      <- nrow(trees_chunk)
+    total_rows  <- total_rows + n_rows
+
+    message("  Rows in this chunk: ", n_rows, " | Total rows so far: ", total_rows)
+
+    # store file path so we can re-read later
+    file_paths <- c(file_paths, file_path)
+
+    # if fewer than chunk_limit rows, we reached the end of the dataset
+    if (n_rows < chunk_limit) {
+      message("Reached final chunk (n_rows < chunk_limit). Stopping download loop.")
+      break
+    }
+
+    # otherwise move offset forward to get the next page
+    offset <- offset + chunk_limit
+  }
+
+  # read all saved chunk files and combine with rbind (keeps sf class)
+  message("Reading all saved chunk files and combining...")
+  tree_list <- purrr::map(file_paths, function(path) {
+    sf::st_read(path, quiet = TRUE)
+  })
+
+  trees_sf <- do.call(rbind, tree_list)
+
+  # transform to WGS84 to match council_sf
+  message("Transforming tree coordinates to WGS84...")
+  trees_sf <- sf::st_transform(trees_sf, crs = "WGS84")
+
+  message("Done. Total rows: ", nrow(trees_sf))
+
+  # return combined sf object
+  trees_sf
+}
+
+# run function to get trees_sf 
+trees_sf <- download_tree_points()
+
+trees_sf |>
+  sf::st_drop_geometry() |>
+  head()
+
+```
+## Task 3: Data Integration and Initial Exploration
+
+::: {.indent-block-tab}
+For this task we will be creating a visualization that will inspect the distribution of trees in NYC. This will allow us to quickly analyze how trees are spread across the city and help us identify areas of concentration.
+:::
+```{r}
+trees_sample <- trees_sf |>
+  dplyr::slice_sample(n = min(20000, nrow(trees_sf)))
+
+ggplot() +
+  # council district boundaries as light outlines
+  geom_sf(data = council_sf,
+          fill = NA,
+          color = "grey60",
+          linewidth = 0.4) +
+  # sampled tree points as small, semi-transparent dots
+  geom_sf(data = trees_sample,
+          color = "darkgreen",
+          alpha = 0.15,   # more transparent
+          size  = 0.3) +  # smaller points
+  coord_sf() +
+  labs(
+    title    = "NYC Tree Points",
+    caption  = "Mapping NYC Trees"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.major = element_line(linewidth = 0.2, colour = "grey90"),
+    panel.background = element_rect(fill = "white", colour = NA)
+  )
+```
+::: {.indent-block-tab}
+This map shows that trees are spread across all five boroughs, but the dense parts appear in Brooklyn, Queens, and the northern half of Manhattan. Staten Island and some waterfront or industrial areas look more patchy, suggesting fewer recorded street trees there. Overall, this provides a quick citywide view of where NYC’s trees is heaviest.
+:::
+
+## Task 4: District-Level Analysis of Tree Coverage
+
+::: {.indent-block-tab}
+Before we can further analyze our NYC trees, we need to join the Tree Points data onto the District boundaries. Once this is done I will be answering a couple of exploratory questions below. 
+:::
+```{r}
+# tag each tree with its council district
+trees_with_district <- sf::st_join(
+  trees_sf,
+  council_sf,
+  join = sf::st_intersects
+)
+
+# drop geometry for easier summaries
+trees_tbl <- trees_with_district |>
+  sf::st_drop_geometry()
+
+# pull district area from council shapefile 
+district_area <- council_sf |>
+  sf::st_drop_geometry() |>
+  dplyr::select(district_id, Shape_Area) |>
+  dplyr::rename(area_sq_m = Shape_Area)
+
+# summarise trees per district: counts, dead fraction
+district_summary <- trees_tbl |>
+  dplyr::group_by(district_id) |>
+  dplyr::summarise(
+    n_trees = dplyr::n(),
+    n_dead  = sum(
+      stringr::str_detect(stringr::str_to_lower(tpcondition), "dead"),
+      na.rm = TRUE
+    ),
+    frac_dead = n_dead / n_trees,
+    .groups   = "drop"
+  ) |>
+  dplyr::left_join(district_area, by = "district_id")
+
+# convert area to square miles and compute trees per square mile
+sqm_per_sqmi <- 1609.34^2  # number of square meters in one square mile
+
+district_summary <- district_summary |>
+  dplyr::mutate(
+    area_sq_mi        = area_sq_m / sqm_per_sqmi,
+    tree_density_sqmi = n_trees / area_sq_mi
+  )
+
+# total trees across all districts (for percentages later)
+total_trees <- sum(district_summary$n_trees, na.rm = TRUE)
+
+# district with most trees
+district_most_trees <- district_summary |>
+  dplyr::slice_max(n_trees, n = 1)
+
+district_most_trees_id <- district_most_trees$district_id
+
+# district with highest tree density (now using trees per square mile)
+district_highest_density <- district_summary |>
+  dplyr::filter(!is.na(tree_density_sqmi)) |>
+  dplyr::slice_max(tree_density_sqmi, n = 1)
+
+district_highest_density_id <- district_highest_density$district_id
+
+# district with highest fraction of dead trees
+district_highest_dead <- district_summary |>
+  dplyr::filter(!is.na(frac_dead)) |>
+  dplyr::slice_max(frac_dead, n = 1)
+
+district_highest_dead_id <- district_highest_dead$district_id
+
+# borough column + Manhattan species
+trees_tbl <- trees_tbl |>
+  dplyr::mutate(
+    borough = dplyr::case_when(
+      dplyr::between(district_id, 1, 10)  ~ "Manhattan",
+      dplyr::between(district_id, 11, 18) ~ "Bronx",
+      dplyr::between(district_id, 19, 32) ~ "Queens",
+      dplyr::between(district_id, 33, 48) ~ "Brooklyn",
+      dplyr::between(district_id, 49, 51) ~ "Staten Island",
+      TRUE                                ~ NA_character_
+    )
+  )
+
+# make a district → borough lookup table
+district_borough_map <- trees_tbl |>
+  dplyr::distinct(district_id, borough)
+
+# borough for the district with the most trees
+district_most_trees_borough <- district_borough_map |>
+  dplyr::filter(district_id == district_most_trees_id) |>
+  dplyr::pull(borough)
+
+# borough for the district with highest tree density
+district_highest_density_borough <- district_borough_map |>
+  dplyr::filter(district_id == district_highest_density_id) |>
+  dplyr::pull(borough)
+
+# borough for the district with highest fraction of dead trees
+district_highest_dead_borough <- district_borough_map |>
+  dplyr::filter(district_id == district_highest_dead_id) |>
+  dplyr::pull(borough)
+
+manhattan_species_counts <- trees_tbl |>
+  dplyr::filter(
+    borough == "Manhattan",
+    !is.na(genusspecies),
+    genusspecies != ""
+  ) |>
+  dplyr::count(genusspecies, sort = TRUE)
+
+most_common_manhattan    <- manhattan_species_counts$genusspecies[1]
+most_common_manhattan_n  <- manhattan_species_counts$n[1]
+total_manhattan_trees    <- sum(manhattan_species_counts$n)
+
+# Baruch point + closest tree
+
+new_st_point <- function(lat, lon, ...) {
+  sf::st_sfc(sf::st_point(c(lon, lat)), crs = "WGS84")
+}
+
+# Newman Vertical Campus coords
+baruch_point <- new_st_point(lat = 40.74194, lon = -73.98583)
+
+# compute distance using trees_with_district so we keep district_id
+trees_with_distance <- trees_with_district |>
+  dplyr::mutate(
+    distance_m = as.numeric(sf::st_distance(geometry, baruch_point))
+  )
+
+closest_tree <- trees_with_distance |>
+  sf::st_drop_geometry() |>
+  dplyr::arrange(distance_m) |>
+  dplyr::slice(1)
+
+closest_species     <- closest_tree$genusspecies
+closest_distance_m  <- closest_tree$distance_m
+closest_district_id <- closest_tree$district_id
+
+# borough for the tree closest to Baruch's campus
+closest_borough <- district_borough_map |>
+  dplyr::filter(district_id == closest_district_id) |>
+  dplyr::pull(borough)
+
+```
+### Question 1: Which council district has the most trees?
+
+::: {.indent-block-tab}
+The council district with the most trees is **District `r district_most_trees_id`** in **`r district_most_trees_borough`**, with about **`r format(district_most_trees$n_trees, big.mark = ",")`** trees. That’s roughly **`r round(100 * district_most_trees$n_trees / total_trees, 1)`%** of all trees. Showing that this borough has the heaviest concentration.
+:::
+
+### Question 2: Which council district has the highest density of trees? 
+
+::: {.indent-block-tab}
+When I divide the number of trees by the district area in square miles, the highest tree density shows up in **District `r district_highest_density_id`** which is in **`r district_highest_density_borough`**. This borough has about **`r format(district_highest_density$n_trees, big.mark = ",")`** trees over roughly **`r round(district_highest_density$area_sq_mi, 1)`** square miles. This works out to around **`r round(district_highest_density$tree_density_sqmi, 0)`** trees per square mile. We can see that this borough packs them into a smaller space.
+:::
+
+### Question 3: Which district has highest fraction of dead trees out of all trees?
+
+::: {.indent-block-tab}
+The district with the highest share of dead trees is **District `r district_highest_dead_id`** in **`r district_highest_dead_borough`**. In this borough, **`r district_highest_dead$n_dead`** out of **`r district_highest_dead$n_trees`** trees are labeled as dead, which is about **`r round(100 * district_highest_dead$frac_dead, 1)`%** of its total trees. That suggests this area might be a good target for maintenance and replacement.
+:::
+
+### Question 4: What is the most common tree species in Manhattan?
+
+::: {.indent-block-tab}
+The most common tree species in Manhattan is **`r most_common_manhattan`**. 
+:::
+
+### Question 5: What is the species of the tree closest to Baruch’s campus?
+::: {.indent-block-tab}
+The closest species of tree is **`r closest_species`** near Baruch's campus.
+:::
+
+## Task 5: NYC Parks Proposal
+
+::: {.indent-block-tab}
+**Queens** has been left out far too long. Its our trees and we need it now. I am proposing a project which will help fund a new tree program within the borough of Queens in **District 29 Richmond Hill**. This is important because in our analysis we found out that Queens has the most dead trees listed. This is an issue because we need to be actively working on planting new trees once they die. What this project intends to do is to identify where new trees can be planted in District 29 Richmond Hill, Queens. Then it will provide funding to those areas for those trees to increase the green canopy within the borough. 
+:::
+
+```{r}
+# point roughly in Richmond Hill, Queens
+
+richmond_point <- new_st_point(
+  lat = 40.695,   # approximate latitude for Richmond Hill
+  lon = -73.829   # approximate longitude for Richmond Hill
+)
+
+# find which council district polygon contains this point
+idx_richmond <- which(sf::st_contains(council_sf, richmond_point, sparse = FALSE))
+
+# sf row for the Richmond Hill district
+richmond_district_sf <- council_sf[idx_richmond, ]
+
+# focus district info
+queens_focus_id      <- richmond_district_sf$district_id
+queens_focus_borough <- "Queens"
+
+# restrict to Queens districts using your existing district_borough_map
+queens_districts <- district_borough_map |>
+  dplyr::filter(borough == "Queens")
+
+# Queens-only summary
+queens_summary <- district_summary |>
+  dplyr::inner_join(queens_districts, by = "district_id")
+
+# metrics for the Richmond Hill district
+queens_focus <- queens_summary |>
+  dplyr::filter(district_id == queens_focus_id)
+
+queens_n_trees      <- queens_focus$n_trees
+queens_n_dead       <- queens_focus$n_dead
+queens_frac_dead    <- queens_focus$frac_dead
+queens_density_sqmi <- queens_focus$tree_density_sqmi
+queens_area_sqmi    <- queens_focus$area_sq_mi
+
+# citywide averages
+avg_density_sqmi   <- mean(district_summary$tree_density_sqmi, na.rm = TRUE)
+avg_frac_dead_city <- mean(district_summary$frac_dead,         na.rm = TRUE)
+
+# comparison districts in other boroughs (NOT Queens)
+comparison_districts <- district_summary |>
+  dplyr::left_join(district_borough_map, by = "district_id") |>
+  dplyr::filter(
+    district_id != queens_focus_id,   # not your Richmond Hill district
+    borough != "Queens"               # and not in Queens at all
+  ) |>
+  dplyr::slice_max(n_dead, n = 3)     # top 3 dead-tree counts in other boroughs
+
+# combined data frame for dead-tree comparison bar chart
+compare_dead_df <- dplyr::bind_rows(
+  queens_focus |>
+    dplyr::mutate(borough = queens_focus_borough, focus = TRUE),
+  comparison_districts |>
+    dplyr::mutate(focus = FALSE)
+) |>
+  dplyr::mutate(
+    label = glue::glue("D{district_id} ({borough})")
+  )
+
+```
+
+::: {.indent-block-tab}
+Queens District `r queens_focus_id` Richmond Hill area has about **`r format(queens_n_trees, big.mark = ",")`** recorded trees, of which roughly **`r format(queens_n_dead, big.mark = ",")`** are marked as dead, or about **`r round(100 * queens_frac_dead, 1)`%**. For this program, I propose to remove and replace at least half of the currently dead trees, which is about **`r round(queens_n_dead * 0.5)`** trees. I also want to add **`r round(queens_n_dead * 0.25)`** new plantings on blocks that currently lack trees. In total, this would mean planting roughly **`r round(queens_n_dead * 0.75)`** new trees within this district.
+
+:::
+
+```{r}
+## zoomed-in map for Queens focus district
+
+ #boundary geometry for the Richmond Hill district (your Queens focus)
+queens_boundary <- council_sf |>
+  dplyr::filter(district_id == queens_focus_id)
+
+# trees inside the focus district, tagged by condition
+queens_trees <- trees_with_district |>
+  dplyr::filter(district_id == queens_focus_id) |>
+  dplyr::mutate(
+    alive_dead = dplyr::case_when(
+      stringr::str_detect(stringr::str_to_lower(tpcondition), "dead") ~ "Dead",
+      TRUE ~ "Alive or unknown"
+    )
+  )
+
+# all dead trees (we care about these for the project)
+queens_dead_trees <- queens_trees |>
+  dplyr::filter(alive_dead == "Dead")
+
+# all alive/unknown trees, then choose a sample size
+queens_alive_all <- queens_trees |>
+  dplyr::filter(alive_dead == "Alive or unknown")
+
+n_alive     <- nrow(queens_alive_all)
+sample_size <- min(4000L, n_alive)  # cap at 4000 for readability
+
+queens_alive_sample <- queens_alive_all |>
+  dplyr::slice_sample(n = sample_size)
+
+# bounding box to keep the view tightly on this district
+bbox_q <- sf::st_bbox(queens_boundary)
+
+ggplot() +
+  geom_sf(data = queens_boundary,
+          fill      = "grey98",
+          color     = "black",
+          linewidth = 0.6) +
+  geom_sf(data  = queens_alive_sample,
+          color = "darkseagreen3",
+          alpha = 0.4,
+          size  = 0.5) +
+  geom_sf(data  = queens_dead_trees,
+          color = "red3",
+          alpha = 0.9,
+          size  = 0.8) +
+  coord_sf(
+    xlim   = c(bbox_q["xmin"], bbox_q["xmax"]),
+    ylim   = c(bbox_q["ymin"], bbox_q["ymax"]),
+    expand = FALSE
+  ) +
+  labs(
+    title    = glue::glue("Dead Trees in Queens District {queens_focus_id} (Richmond Hill)"),,
+    x        = "Longitude",
+    y        = "Latitude",
+    caption  = "Red points show all trees marked as dead."
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.major = element_line(colour = "grey90", linewidth = 0.3),
+    panel.grid.minor = element_blank(),
+    plot.title       = element_text(face = "bold"),
+    legend.position  = "none"
+  )
+```
+::: {.indent-block-tab}
+For our proposal I am providing the visualization above which shows a concentration of dead trees within District 29 Richmond Hill, Queens. This lets us visually identify where we need to plant the trees in this project. Its our trees and we need it now!
+:::
+
+
+::: {.indent-block-tab}
+Queens District `r queens_focus_id`- Richmond Hill, has about **`r format(queens_n_dead, big.mark = ",")`** dead trees out of **`r format(queens_n_trees, big.mark = ",")`** total, so roughly **`r round(100 * queens_frac_dead, 1)`%** of the canopy is already classified as dead. To put this in context, I compared it to three other high-need districts in other boroughs: **District `r comparison_districts$district_id[1]` (`r comparison_districts$borough[1]`)**, **District `r comparison_districts$district_id[2]` (`r comparison_districts$borough[2]`)**, and **District `r comparison_districts$district_id[3]` (`r comparison_districts$borough[3]`)**. These districts have around **`r format(comparison_districts$n_dead[1], big.mark = ",")`**, **`r format(comparison_districts$n_dead[2], big.mark = ",")`**, and **`r format(comparison_districts$n_dead[3], big.mark = ",")`** dead trees respectively. When comparing to these districts Queens District `r queens_focus_id` Richmond Hill has a similarly high share of its trees in poor condition.
+:::
+
+::: {.indent-block-tab}
+Looking at canopy density tells a similar story. Queens District `r queens_focus_id` Richmond has about **`r round(queens_density_sqmi, 0)`** trees per square mile, which is close to the citywide average of roughly **`r round(avg_density_sqmi, 0)`** trees per square mile. That means it does not have an surplus to begin with, yet it still has a substantial amount of dead trees. The comparison districts in Staten Island tend to be more heavier in tree density, so losing trees there is buffered by a denser population of trees, whereas in Richmond Hill each dead tree represents a bigger loss relative to the total. 
+:::
+
+```{r}
+## Bar chart: Queens focus district vs 3 high-dead-tree districts in other boroughs
+
+ggplot(compare_dead_df,
+       aes(x = reorder(label, n_dead),
+           y = n_dead,
+           fill = focus)) +
+  # one bar per district
+  geom_col() +
+  # flip so labels are easier to read
+  coord_flip() +
+  # highlight Queens focus district, grey for others
+  scale_fill_manual(
+    values = c("TRUE" = "firebrick", "FALSE" = "grey70"),
+    labels = c("TRUE" = "Queens focus district",
+               "FALSE" = "Other districts"),
+    name   = NULL
+  ) +
+  labs(
+    title    = "Dead trees by NYC council district",
+    subtitle = glue::glue("Queens District {queens_focus_id} (Richmond Hill) vs 3 other high-dead-tree districts"),
+    x        = "District",
+    y        = "Number of trees marked dead"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "bottom"
+  )
+```
+::: {.indent-block-tab}
+In this chart it can be seen that even though the other districts hav higher dead tree counts. The density is higher causing a higher buffer point.  
+:::
+```{r}
+## Task 5: map-based comparison of tree density
+## Choropleth: trees per square mile for all districts
+
+# attach summary metrics back onto the council geometry
+district_map_sf <- council_sf |>
+  dplyr::left_join(district_summary, by = "district_id")
+
+ggplot(district_map_sf) +
+  # fill each district by tree density per square mile
+  geom_sf(aes(fill = tree_density_sqmi),
+          color     = "white",
+          linewidth = 0.2) +
+  # color scale with sqrt transform so extremes are easier to see
+  scale_fill_viridis_c(
+    option = "viridis",
+    trans  = "sqrt",
+    name   = "Trees per\nsquare mile"
+  ) +
+  labs(
+    title    = "Tree density by NYC City Council District"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.background = element_rect(fill = "grey98", colour = NA),
+    panel.grid.major = element_line(colour = "grey90", linewidth = 0.2)
+  )
+
+```
+::: {.indent-block-tab}
+In this map based visual we can clearly see that our district within the borough of queens has a lower trees per square mile ratio. This further supports my proposal of implementing tree revival within the district 29 Richmond Hill Queens. Its our trees and we need it now!!!  
+:::
+
+## Extra Credit Opportunity #01: Improved Tree Map Visualizations
+```{r}
+
+
+library(leaflet)
+
+# make sure we have the Richmond Hill district sf object
+richmond_district_sf <- council_sf |>
+  dplyr::filter(district_id == queens_focus_id)
+
+ 
+
+# tag each tree as Dead vs Alive
+trees_for_map <- trees_sf |>
+  dplyr::mutate(
+    cond_group = dplyr::case_when(
+      stringr::str_detect(stringr::str_to_lower(tpcondition), "dead") ~ "Dead",
+      TRUE ~ "Alive"
+    )
+  )
+
+# split into dead and alive, then sample for performance
+dead_all <- trees_for_map |>
+  dplyr::filter(cond_group == "Dead")
+
+alive_all <- trees_for_map |>
+  dplyr::filter(cond_group == "Alive")
+
+dead_sample_size  <- min(15000L, nrow(dead_all))
+alive_sample_size <- min(15000L, nrow(alive_all))
+
+dead_sample <- dead_all |>
+  dplyr::slice_sample(n = dead_sample_size)
+
+alive_sample <- alive_all |>
+  dplyr::slice_sample(n = alive_sample_size)
+
+# convert sf objects to plain data frames with lon/lat columns
+coords_dead  <- sf::st_coordinates(dead_sample)
+coords_alive <- sf::st_coordinates(alive_sample)
+
+dead_df <- dead_sample |>
+  sf::st_drop_geometry() |>
+  dplyr::mutate(
+    lon = coords_dead[, 1],
+    lat = coords_dead[, 2]
+  )
+
+alive_df <- alive_sample |>
+  sf::st_drop_geometry() |>
+  dplyr::mutate(
+    lon = coords_alive[, 1],
+    lat = coords_alive[, 2]
+  )
+
+
+
+district_centers <- sf::st_centroid(council_sf)
+
+coords_centers <- sf::st_coordinates(district_centers)
+
+district_centers <- district_centers |>
+  dplyr::mutate(
+    lon = coords_centers[, 1],
+    lat = coords_centers[, 2]
+  )
+
+
+
+leaflet() |>
+  # base map tiles
+  addProviderTiles(providers$CartoDB.Positron) |>
+  
+  # all council districts outlined in black
+  addPolygons(
+    data        = council_sf,
+    fillOpacity = 0,
+    color       = "black",
+    weight      = 1,
+    label       = ~paste("District", district_id)
+  ) |>
+  
+  # Richmond Hill focus district highlighted in red
+  addPolygons(
+    data        = richmond_district_sf,
+    fillOpacity = 0,
+    color       = "red",
+    weight      = 3
+  ) |>
+  
+  # district numbers at centroids
+  addLabelOnlyMarkers(
+    data  = district_centers,
+    lng   = ~lon,
+    lat   = ~lat,
+    label = ~as.character(district_id),
+    labelOptions = labelOptions(
+      noHide    = TRUE,
+      direction = "center",
+      textsize  = "9px",
+      opacity   = 0.7
+    )
+  ) |>
+  
+  # alive trees layer (green)
+  addCircleMarkers(
+    data        = alive_df,
+    lng         = ~lon,
+    lat         = ~lat,
+    radius      = 2,
+    stroke      = FALSE,
+    fillOpacity = 0.4,
+    color       = "darkgreen",
+    group       = "Alive"
+  ) |>
+  
+  # dead trees layer (red)
+  addCircleMarkers(
+    data        = dead_df,
+    lng         = ~lon,
+    lat         = ~lat,
+    radius      = 3,
+    stroke      = FALSE,
+    fillOpacity = 0.7,
+    color       = "red",
+    group       = "Dead"
+  ) |>
+  
+  # layer control to toggle alive/dead trees
+  addLayersControl(
+    overlayGroups = c("Alive", "Dead"),
+    options       = layersControlOptions(collapsed = FALSE)
+  ) |>
+  
+  # legend for tree status
+  addLegend(
+    position = "bottomright",
+    colors   = c("darkgreen", "red"),
+    labels   = c("Alive", "Dead"),
+    title    = "Tree status"
+  )
+
+```
+

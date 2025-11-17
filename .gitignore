@@ -1,3 +1,12 @@
+# Quarto / R Markdown caches
+mp03_cache/
+*_cache/
+
+# NYC tree and council data
+data/mp03/tree_points_raw/
+data/mp03/*.geojson
+data/mp03/*.zip
+
 .Rproj.user
 .Rhistory
 .RData
