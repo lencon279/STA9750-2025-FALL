@@ -1,7 +1,7 @@
 # Quarto / R Markdown caches
 mp03_cache/
 *_cache/
-
+kaggle.json
 # NYC tree and council data
 data/mp03/tree_points_raw/
 data/mp03/*.geojson
