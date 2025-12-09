@@ -1,0 +1,565 @@
+---
+title: "Have Mental Health Difficulties Risen Alongside Global Social Media Use?"
+author: "Lincon Chopra"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: false
+    theme:
+      light: cosmo
+      dark: darkly
+    df-print: paged
+    code-fold: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+<div style="text-align:center;">
+![](images/mind-vs-social-media.png){width=85%}
+</div>
+
+
+```{css}
+.indent-block-tab {
+text-indent: 2em;
+}
+```
+
+## Introduction
+::: {.indent-block-tab}
+In this report, I investigate whether heavier technology and social media use is associated with higher levels of mental health difficulties such as anxiety, stress, and depression. I use several survey data sets from Kaggle that measure screen time and social media usage, along with self-reported mental health indicators. With this I can test whether, people who spend more time on screens and social media report worse mental health. I combine and standardize the data sets, explore trends, and run  statistical tests to see how strongly usage and mental health are linked.
+:::
+
+## Specific Question 
+::: {.indent-block-tab}
+**Have mental health difficulties risen alongside global social media use?**
+:::
+
+## Data Acquisition
+::: {.indent-block-tab}
+I pulled all data directly from the Kaggle API instead of downloading the files manually. I used the official Kaggle command line to setup the downloads. Each dataset is stored in a separate folder under `data/`, and the code checks whether a CSV already exists before downloading again, preventing multiple downloads. 
+
+The three datasets I use are: **Tech Use and Stress Wellness**, **Tech Gadget Usage and Mental Wellbeing**, and **Students' Social Media Addictions**.  
+:::
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(readr)
+library(httr2)
+library(jsonlite)
+library(infer)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+```
+
+
+```{r}
+check_kaggle_cli <- function() {
+  # Try running `kaggle --version` and check exit status
+  status <- system("kaggle --version", ignore.stdout = TRUE, ignore.stderr = TRUE)
+  if (status != 0) {
+    stop(
+      "Kaggle CLI not found or not working.\n",
+      "Install it with `pip install kaggle`,\n",
+      "place your kaggle.json in ~/.kaggle/, and\n",
+      "make sure `kaggle` is on your PATH."
+    )
+  }
+}
+
+# Run the check once
+check_kaggle_cli()
+
+
+# Helper: download Kaggle dataset
+
+
+download_kaggle_dataset <- function(dataset, out_dir) {
+  # dataset: "owner_slug/dataset_slug"
+  # out_dir: directory for the dataset (e.g. "data/tech_use_stress")
+  
+  # Create directory if it doesn't exist
+  if (!dir.exists(out_dir)) {
+    dir.create(out_dir, recursive = TRUE)
+  }
+  
+  # If there is already at least one CSV in out_dir, skip download
+  existing_csv <- list.files(out_dir, pattern = "\\.csv$", full.names = TRUE)
+  if (length(existing_csv) > 0) {
+    message("Found existing CSV in ", out_dir, " – skipping Kaggle download.")
+    return(invisible(existing_csv))
+  }
+  
+  # Build the Kaggle CLI command
+  cmd <- sprintf(
+    "kaggle datasets download -d %s -p %s --unzip",
+    dataset,
+    out_dir
+  )
+  
+  message("Running: ", cmd)
+  status <- system(cmd)
+  
+  if (status != 0) {
+    stop(
+      "Kaggle download failed for ", dataset, ".\n",
+      "Check that the dataset name is correct and Kaggle CLI works.\n",
+      "Command attempted: ", cmd
+    )
+  }
+  
+  # Return list of CSV files after download
+  list.files(out_dir, pattern = "\\.csv$", full.names = TRUE)
+}
+
+
+
+# Download three Kaggle datasets 
+
+
+# Ensure a top-level data directory exists
+if (!dir.exists("data")) dir.create("data")
+
+# 1) Tech Use & Stress Wellness
+download_kaggle_dataset(
+  dataset = "nagpalprabhavalkar/tech-use-and-stress-wellness",
+  out_dir = "data/tech_use_stress"
+)
+
+# 2) Tech Gadget Usage and Mental Wellbeing
+download_kaggle_dataset(
+  dataset = "kasunvishvajith/tech-gadget-usage-and-mental-wellbeing",
+  out_dir = "data/gadget_mental_wellbeing"
+)
+
+# 3) Social Media Addiction vs Relationships
+download_kaggle_dataset(
+  dataset = "adilshamim8/social-media-addiction-vs-relationships",
+  out_dir = "data/social_media_relationships"
+)
+
+
+
+# Helper: read a single CSV from each directory
+
+
+read_single_csv <- function(dir_path) {
+  csv_files <- list.files(dir_path, pattern = "\\.csv$", full.names = TRUE)
+  if (length(csv_files) == 0) {
+    stop("No CSV files found in ", dir_path, ". Did the Kaggle download work?")
+  }
+  readr::read_csv(csv_files[1], show_col_types = FALSE)
+}
+
+tech_use_stress   <- read_single_csv("data/tech_use_stress")
+gadget_mental     <- read_single_csv("data/gadget_mental_wellbeing")
+social_media_rel  <- read_single_csv("data/social_media_relationships")
+```
+
+```{r}
+cat("Table 1. Raw Tech Use & Stress Wellness dataset\n")
+tech_use_stress
+
+cat("Table 2. Raw Tech Gadget Usage and Mental Wellbeing dataset\n")
+gadget_mental
+
+cat("Table 3. Raw Students' Social Media Addiction dataset\n")
+social_media_rel
+```
+::: {.indent-block-tab}
+Tables 1–3 show the Kaggle datasets. Each contain different but overlapping data about social media habits and mental health.
+:::
+
+## Data Cleaning
+::: {.indent-block-tab}
+I clean the data by handling missing values, renaming variables, and ensuring that usage and mental health measures are normalized. I then combined all of the data sets into one table for analysis. This lets me analyze all surveyed data together while still being able to see where it originated from.
+:::
+```{r}
+
+# Clean column names 
+
+tech_use_stress   <- tech_use_stress   |> clean_names()
+gadget_mental     <- gadget_mental     |> clean_names()
+social_media_rel  <- social_media_rel  |> clean_names()
+
+# Map Tech Use & Stress Wellness dataset 
+
+tech_use_clean <- tech_use_stress |>
+  transmute(
+    dataset           = "tech_use",
+    user_id,
+    age,
+    gender,
+    screen_time_hours  = daily_screen_time_hours,
+    social_media_hours = social_media_hours,
+    anxiety_score      = weekly_anxiety_score,
+    stress_score       = stress_level,
+    depression_score   = weekly_depression_score
+  )
+cat("Table 4. Cleaned Tech Use & Stress Wellness dataset\n")
+tech_use_clean
+
+```
+::: {.indent-block-tab}
+Table 4 shows the cleaned **Tech Use & Stress Wellness** data, with standardized column names.
+:::
+
+
+```{r}
+
+
+# Map Tech Gadget Usage and Mental Wellbeing dataset 
+
+gadget_clean <- gadget_mental |>
+  transmute(
+    dataset           = "gadget",
+    user_id,
+    age,
+    gender,
+    screen_time_hours  = daily_screen_time,
+    social_media_hours = social_media_hours,
+    anxiety_score      = NA_real_,   # not available
+    stress_score       = stress_level,
+    depression_score   = NA_real_    # not available
+  )
+
+cat("Table 5. Cleaned Tech Gadget Usage and Mental Wellbeing dataset\n")
+gadget_clean
+
+
+```
+
+::: {.indent-block-tab}
+Table 5 shows the cleaned **Tech Gadget Usage and Mental Wellbeing** data, mapped into the same standardized names.
+:::
+
+```{r}
+# Map Social Media Addiction vs Relationships dataset 
+
+social_clean <- social_media_rel |>
+  transmute(
+    dataset           = "social_rel",
+    user_id           = student_id,
+    age,
+    gender,
+    academic_level,
+    country,
+    screen_time_hours  = avg_daily_usage_hours,
+    social_media_hours = avg_daily_usage_hours,
+    anxiety_score      = mental_health_score,  # higher = better MH in this file
+    stress_score       = NA_real_,
+    depression_score   = NA_real_
+  )
+
+cat("Table 6. Students' Social Media Addiction dataset\n")
+social_clean
+
+
+```
+
+::: {.indent-block-tab}
+Table 6 shows the cleaned **Students' Social Media Addiction** data.
+:::
+
+```{r}
+# Combine all three datasets 
+
+mh_wide <- bind_rows(
+  tech_use_clean,
+  gadget_clean,
+  social_clean
+)
+
+cat("Table 7. Combined tech and mental health dataset\n")
+mh_wide
+```
+
+::: {.indent-block-tab}
+Table 7 combines all three sources into a single data set `mh_wide`. This provides me a large data sample to work with. 
+:::
+
+## Analysis and Visualizations
+::: {.indent-block-tab}
+
+Using the cleaned data set, I compute summary statistics and correlations between technology/social media use and mental health scores. I then created four visualizations which help visualize whether higher usage is associated with worse mental health outcomes in the data.
+:::
+
+```{r}
+mh_usage <- mh_wide |>
+  mutate(
+    usage_group = case_when(
+      social_media_hours < 2 ~ "low",
+      social_media_hours < 4 ~ "medium",
+      TRUE                   ~ "high"
+    ),
+    usage_group = factor(usage_group, levels = c("low", "medium", "high")),
+    mh_index = rowMeans(
+      cbind(anxiety_score, stress_score, depression_score),
+      na.rm = TRUE
+    )
+  )
+
+cat(" Table 8. Analysis dataset with usage_group and mh_index\n")
+mh_usage
+
+
+```
+::: {.indent-block-tab}
+Table 8 summarizes the combined data. On average, people spend several hours per day on screens and social media, and the mean anxiety, stress, and depression scores are in range of their respective levels of usage.
+:::
+```{r}
+# SUMMARY TABLE 
+
+mh_summary <- mh_usage |>
+  summarise(
+    n_obs           = n(),
+    mean_screen     = mean(screen_time_hours,  na.rm = TRUE),
+    mean_social     = mean(social_media_hours, na.rm = TRUE),
+    mean_anxiety    = mean(anxiety_score,      na.rm = TRUE),
+    mean_stress     = mean(stress_score,       na.rm = TRUE),
+    mean_depression = mean(depression_score,   na.rm = TRUE)
+  )
+
+cat(" Table 9. Summary statistics for usage and mental health\n")
+mh_summary
+
+
+```
+
+::: {.indent-block-tab}
+Table 9 shows summary statistics between usage variables and mental health scores. 
+:::
+
+```{r}
+# CORRELATION TABLE 
+
+cor_matrix <- mh_usage |>
+  select(
+    screen_time_hours,
+    social_media_hours,
+    anxiety_score,
+    stress_score,
+    depression_score
+  ) |>
+  cor(use = "pairwise.complete.obs")
+
+cat(" Table 10. Correlation matrix between usage and mental health variables\n")
+as_tibble(cor_matrix, rownames = "variable")
+
+```
+
+::: {.indent-block-tab}
+Table 10 shows mean anxiety by low, medium, and high social media usage groups. The averages rise from the low group to the high group, suggesting that people in the highest social media group experience more anxiety on average.
+:::
+
+```{r}
+# Plot 1: Screen time vs anxiety 
+
+ggplot(mh_usage, aes(x = screen_time_hours, y = anxiety_score)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Screen Time and Anxiety",
+    x     = "Daily screen time (hours)",
+    y     = "Anxiety score "
+  )
+
+```
+
+::: {.indent-block-tab}
+This visualization shows an upward trend between daily screen time and anxiety, especially in the **tech_use** data set where there are anxiety scores. The regression line mostly trends upward, which supports the idea that heavier screen users tend to report more anxiety symptoms.
+:::
+
+```{r}
+
+
+# Plot 2: Social media time vs depression 
+
+ggplot(mh_usage, aes(x = social_media_hours, y = depression_score)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Social Media Use and Depression",
+    x     = "Daily social media time (hours)",
+    y     = "Depression score"
+  )
+
+
+```
+
+::: {.indent-block-tab}
+In this visualization the trend is similar. As social media hours increase, depression scores are slightly higher on average.
+:::
+
+```{r}
+# Group means for anxiety by usage group 
+
+group_anxiety <- mh_usage |>
+  group_by(usage_group) |>
+  summarise(
+    mean_anxiety = mean(anxiety_score, na.rm = TRUE),
+    se_anxiety   = sd(anxiety_score,   na.rm = TRUE) /
+      sqrt(sum(!is.na(anxiety_score))),
+    .groups      = "drop"
+  )
+
+cat(" Table 11. Mean anxiety and standard error by usage group\n")
+group_anxiety
+
+
+```
+
+::: {.indent-block-tab}
+Table 11 shows how many people fall into the low usage and high usage groups.
+:::
+
+```{r}
+# Plot 3: Mean anxiety by usage group 
+
+ggplot(group_anxiety, aes(x = usage_group, y = mean_anxiety)) +
+  geom_col() +
+  geom_errorbar(
+    aes(
+      ymin = mean_anxiety - 1.96 * se_anxiety,
+      ymax = mean_anxiety + 1.96 * se_anxiety
+    ),
+    width = 0.2
+  ) +
+  labs(
+    title = "Average Anxiety by Social Media Usage Group",
+    x     = "Usage group",
+    y     = "Mean anxiety score"
+  )
+
+
+```
+::: {.indent-block-tab}
+The bar chart makes our findings clearer; high usage users have noticeably higher mean anxiety than low usage users.
+:::
+
+```{r}
+# Plot 4: Composite MH index vs social media 
+
+ggplot(mh_usage, aes(x = social_media_hours, y = mh_index)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    title = "Overall Mental Health Difficulty vs Social Media Use",
+    x     = "Daily social media time (hours)",
+    y     = "Overall mental health index"
+  )
+
+
+
+```
+
+::: {.indent-block-tab}
+When I normalize anxiety, stress, and depression into a single composite index, the relationship with social media use still trends upwards. 
+:::
+
+```{r}
+#STATISTICAL TESTS 
+
+# Test 1: correlation (social media vs anxiety) 
+
+cor_data_anx <- mh_usage |>
+  drop_na(social_media_hours, anxiety_score)
+
+cor_test_anxiety <- cor.test(
+  cor_data_anx$social_media_hours,
+  cor_data_anx$anxiety_score,
+  use        = "complete.obs",
+  alternative = "two.sided"
+)
+
+cat(" Test 1. Correlation between social media hours and anxiety\n")
+cor_test_anxiety
+
+
+```
+
+::: {.indent-block-tab}
+**Test 1 correlation with anxiety:** The correlation between social media hours and anxiety is positive. This means that there is a strong correlation between anxiety and social media use. 
+:::
+
+```{r}
+# Test 2: correlation (social media vs depression) ---------
+
+cor_data_dep <- mh_usage |>
+  drop_na(social_media_hours, depression_score)
+
+cor_test_depression <- cor.test(
+  cor_data_dep$social_media_hours,
+  cor_data_dep$depression_score,
+  use        = "complete.obs",
+  alternative = "two.sided"
+)
+
+cat(" Test 2. Correlation between social media hours and depression\n")
+cor_test_depression
+
+
+```
+
+::: {.indent-block-tab}
+**Test 2 correlation with depression:** The correlation between social media hours and depression is smaller but still positive.
+:::
+
+```{r}
+# Test 3: high vs low social media on anxiety --------------
+
+mh_hi_lo <- mh_usage |>
+  mutate(
+    hi_lo_group = case_when(
+      social_media_hours < 2 ~ "low",
+      social_media_hours >= 4 ~ "high",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  drop_na(hi_lo_group, anxiety_score)
+
+mh_hi_lo_counts <- mh_hi_lo |>
+  count(hi_lo_group)
+
+cat(" Table 12. Number of observations in low vs high social media usage groups\n")
+mh_hi_lo_counts
+
+
+```
+
+::: {.indent-block-tab}
+This shows how many people fall into the **low** and **high** social media usage groups.
+:::
+
+```{r}
+anxiety_ttest <- mh_hi_lo |>
+  t_test(
+    anxiety_score ~ hi_lo_group,
+    order = c("high", "low")  # estimate = mean(high) - mean(low)
+  )
+
+cat(" Test 3. Two-sample t-test for anxiety: high vs low social media users\n")
+anxiety_ttest
+```
+
+::: {.indent-block-tab}
+**Test 3 high vs low usage on anxiety:** The two-sample t-test compares mean anxiety between high and low social media users. The estimated difference is positive, showing that high usage users report higher anxiety on average than low usage users.
+:::
+
+## Conclusion
+::: {.indent-block-tab}
+My specific question stated: **have mental health difficulties risen alongside global social media use?** To answer this, I combined three different Kaggle data sets with `r mh_summary$n_obs` total respondents. On average, people in this dataset use screens about `r round(mh_summary$mean_screen, 1)` hours per day and social media about `r round(mh_summary$mean_social, 1)` hours per day. Their average anxiety score is around `r round(mh_summary$mean_anxiety, 1)`.
+
+The results are pretty clear. The scatterplots of screen time vs. anxiety and social media hours vs. depression both slope upward meaning heavier users tend to have higher mental health difficulty scores. The correlation between social media hours and anxiety is about `r round(unname(cor_test_anxiety$estimate), 2)`, with a p-value of `r signif(cor_test_anxiety$p.value, 3)`, which shows that this relationship isn’t just random. For depression, the correlation is smaller but still positive, so the trend is similar.
+
+When I group people into **low**, **medium**, and **high** social media users, the same trend appears. The low use group has an average anxiety score of about `r round(group_anxiety$mean_anxiety[group_anxiety$usage_group == "low"], 1)`, the medium group is around `r round(group_anxiety$mean_anxiety[group_anxiety$usage_group == "medium"], 1)`, and the high use group is up at roughly `r round(group_anxiety$mean_anxiety[group_anxiety$usage_group == "high"], 1)`. There are plenty of people in each group, so these averages aren’t being driven by just a few outliers.
+
+The two-sample t-test comparing anxiety in high vs. low social media users also supports the current evidence. The estimated difference in mean anxiety is about `r round(anxiety_ttest$estimate, 2)` points, with a 95% confidence interval from `r round(anxiety_ttest$lower_ci, 2)` to `r round(anxiety_ttest$upper_ci, 2)` and a p-value of `r signif(anxiety_ttest$p_value, 3)`. This tells us that high social media users are more anxious on average than low users.
+
+My final conclusion is: **in these three data sets, more social media use goes hand-in-hand with more mental health difficulties**. It supports the idea that rising social media use is part of a setting where anxiety, stress, and depression are becoming more common.
+:::
