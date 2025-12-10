@@ -33,7 +33,12 @@ text-indent: 2em;
 In this report, I investigate whether heavier technology and social media use is associated with higher levels of mental health difficulties such as anxiety, stress, and depression. I use several survey data sets from Kaggle that measure screen time and social media usage, along with self-reported mental health indicators. With this I can test whether, people who spend more time on screens and social media report worse mental health. I combine and standardize the data sets, explore trends, and run  statistical tests to see how strongly usage and mental health are linked.
 :::
 
-## Specific Question 
+## Overarching Question
+
+::: {.indent-block-tab}
+**How is social media usage associated with indicators of anxiety, depression, and attention difficulties among young adults worldwide?**
+:::
+### Specific Question 
 ::: {.indent-block-tab}
 **Have mental health difficulties risen alongside global social media use?**
 :::
@@ -55,6 +60,14 @@ library(infer)
 library(dplyr)
 library(stringr)
 library(ggplot2)
+library(plotly)
+library(crosstalk)
+library(DT)
+library(htmltools) 
+library(countrycode)
+library(viridis)
+library(ggrepel)
+library(ggExtra)
 ```
 
 
@@ -283,6 +296,21 @@ mh_wide
 Table 7 combines all three sources into a single data set `mh_wide`. This provides me a large data sample to work with. 
 :::
 
+```{r}
+mh_scales <- mh_wide |>
+  summarise(
+    mean_anx = mean(anxiety_score,    na.rm = TRUE),
+    sd_anx   = sd(anxiety_score,      na.rm = TRUE),
+    mean_str = mean(stress_score,     na.rm = TRUE),
+    sd_str   = sd(stress_score,       na.rm = TRUE),
+    mean_dep = mean(depression_score, na.rm = TRUE),
+    sd_dep   = sd(depression_score,   na.rm = TRUE)
+  )
+
+mh_scales
+```
+
+
 ## Analysis and Visualizations
 ::: {.indent-block-tab}
 
@@ -292,16 +320,26 @@ Using the cleaned data set, I compute summary statistics and correlations betwee
 ```{r}
 mh_usage <- mh_wide |>
   mutate(
+    # Social media usage groups based on hours
     usage_group = case_when(
       social_media_hours < 2 ~ "low",
       social_media_hours < 4 ~ "medium",
       TRUE                   ~ "high"
     ),
     usage_group = factor(usage_group, levels = c("low", "medium", "high")),
-    mh_index = rowMeans(
-      cbind(anxiety_score, stress_score, depression_score),
+    
+    # Standardized (z) scores for each mental health dimension
+    z_anxiety = (anxiety_score    - mh_scales$mean_anx) / mh_scales$sd_anx,
+    z_stress  = (stress_score     - mh_scales$mean_str) / mh_scales$sd_str,
+    z_dep     = (depression_score - mh_scales$mean_dep) / mh_scales$sd_dep,
+    
+    # Composite normalized mental health difficulty index:
+    # average of available z-scores
+    mh_z = rowMeans(
+      cbind(z_anxiety, z_stress, z_dep),
       na.rm = TRUE
-    )
+    ),
+    mh_z = ifelse(is.nan(mh_z), NA_real_, mh_z)
   )
 
 cat(" Table 8. Analysis dataset with usage_group and mh_index\n")
@@ -357,39 +395,110 @@ as_tibble(cor_matrix, rownames = "variable")
 Table 10 shows mean anxiety by low, medium, and high social media usage groups. The averages rise from the low group to the high group, suggesting that people in the highest social media group experience more anxiety on average.
 :::
 
-```{r}
-# Plot 1: Screen time vs anxiety 
 
-ggplot(mh_usage, aes(x = screen_time_hours, y = anxiety_score)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "lm", se = TRUE) +
+```{r}
+# Compute correlation between screen time and anxiety 
+cor_anx <- mh_usage |>
+  dplyr::summarise(
+    r = cor(screen_time_hours, anxiety_score, use = "complete.obs")
+  ) |>
+  dplyr::pull(r)
+
+# Base ggplot: scatter + regression line 
+base_screen_anx <- mh_usage |>
+  dplyr::filter(!is.na(screen_time_hours), !is.na(anxiety_score)) |>
+  ggplot(aes(x = screen_time_hours, y = anxiety_score, color = usage_group)) +
+  geom_point(alpha = 0.4, size = 1.8) +
+  geom_smooth(
+    method    = "lm",
+    se        = TRUE,
+    color     = "black",
+    linewidth = 0.9
+  ) +
+  scale_color_viridis_d(option = "plasma", end = 0.9) +
   labs(
-    title = "Screen Time and Anxiety",
-    x     = "Daily screen time (hours)",
-    y     = "Anxiety score "
+    title    = "Screen Time and Anxiety",
+    subtitle = paste0(
+      "Correlation between screen time and anxiety: r ≈ ",
+      round(cor_anx, 2)
+    ),
+    x        = "Daily screen time (hours)",
+    y        = "Anxiety score",
+    color    = "Usage group"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 16),
+    plot.subtitle    = element_text(size = 11, margin = margin(b = 8)),
+    legend.position  = "bottom",
+    panel.grid.minor = element_blank()
   )
 
+# marginal density plots 
+p_screen_anx_marginal <- ggMarginal(
+  base_screen_anx,
+  type      = "density",  
+  groupFill = TRUE,       # color margins by usage_group
+  alpha     = 0.5
+)
+
+p_screen_anx_marginal
 ```
 
+
 ::: {.indent-block-tab}
-This visualization shows an upward trend between daily screen time and anxiety, especially in the **tech_use** data set where there are anxiety scores. The regression line mostly trends upward, which supports the idea that heavier screen users tend to report more anxiety symptoms.
+This visualization shows an upward trend between daily screen time and anxiety. The regression line mostly trends upward, which supports the idea that heavier screen users tend to report more anxiety symptoms.
 :::
 
 ```{r}
 
 
-# Plot 2: Social media time vs depression 
+# Compute correlation between social media time and depression 
+cor_dep <- mh_usage |>
+  dplyr::summarise(
+    r = cor(social_media_hours, depression_score, use = "complete.obs")
+  ) |>
+  dplyr::pull(r)
 
-ggplot(mh_usage, aes(x = social_media_hours, y = depression_score)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "lm", se = TRUE) +
+# Base ggplot: scatter + regression line 
+base_social_dep <- mh_usage |>
+  dplyr::filter(!is.na(social_media_hours), !is.na(depression_score)) |>
+  ggplot(aes(x = social_media_hours, y = depression_score, color = usage_group)) +
+  geom_point(alpha = 0.4, size = 1.8) +
+  geom_smooth(
+    method    = "lm",
+    se        = TRUE,
+    color     = "black",
+    linewidth = 0.9
+  ) +
+  scale_color_viridis_d(option = "plasma", end = 0.9) +
   labs(
-    title = "Social Media Use and Depression",
-    x     = "Daily social media time (hours)",
-    y     = "Depression score"
+    title    = "Social Media Use and Depression",
+    subtitle = paste0(
+      "Correlation between social media hours and depression: r ≈ ",
+      round(cor_dep, 2)
+    ),
+    x        = "Daily social media time (hours)",
+    y        = "Depression score",
+    color    = "Usage group"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 16),
+    plot.subtitle    = element_text(size = 11, margin = margin(b = 8)),
+    legend.position  = "bottom",
+    panel.grid.minor = element_blank()
   )
 
+# Add marginal density plots -
+p_social_dep_marginal <- ggExtra::ggMarginal(
+  base_social_dep,
+  type      = "density",  # or "histogram"
+  groupFill = TRUE,       # color margins by usage_group
+  alpha     = 0.5
+)
 
+p_social_dep_marginal
 ```
 
 ::: {.indent-block-tab}
@@ -421,19 +530,41 @@ Table 11 shows how many people fall into the low usage and high usage groups.
 ```{r}
 # Plot 3: Mean anxiety by usage group 
 
-ggplot(group_anxiety, aes(x = usage_group, y = mean_anxiety)) +
-  geom_col() +
+# Ensure usage_group is ordered
+group_anxiety <- group_anxiety |>
+  dplyr::mutate(
+    usage_group = factor(usage_group, levels = c("low", "medium", "high"))
+  )
+
+ggplot(group_anxiety, aes(x = usage_group, y = mean_anxiety, fill = usage_group)) +
+  geom_col(width = 0.6, color = "grey20") +
   geom_errorbar(
     aes(
       ymin = mean_anxiety - 1.96 * se_anxiety,
       ymax = mean_anxiety + 1.96 * se_anxiety
     ),
-    width = 0.2
+    width = 0.15,
+    linewidth = 0.6
   ) +
+  geom_text(
+    aes(label = round(mean_anxiety, 1)),
+    vjust = -0.5,
+    size  = 3.5
+  ) +
+  scale_fill_viridis_d(option = "plasma", end = 0.9, direction = -1) +
+  coord_cartesian(ylim = c(0, max(group_anxiety$mean_anxiety + 1.96 * group_anxiety$se_anxiety, na.rm = TRUE) * 1.1)) +
   labs(
-    title = "Average Anxiety by Social Media Usage Group",
-    x     = "Usage group",
-    y     = "Mean anxiety score"
+    title    = "Average Anxiety by Social Media Usage Group",
+    x        = "Social media usage group",
+    y        = "Mean anxiety score",
+    fill     = "Usage group"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 16),
+    plot.subtitle    = element_text(size = 11, margin = margin(b = 8)),
+    legend.position  = "none",
+    panel.grid.minor = element_blank()
   )
 
 
@@ -445,22 +576,81 @@ The bar chart makes our findings clearer; high usage users have noticeably highe
 ```{r}
 # Plot 4: Composite MH index vs social media 
 
-ggplot(mh_usage, aes(x = social_media_hours, y = mh_index)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "lm", se = TRUE) +
+# Compute correlation between social media hours and composite MH index ----
+cor_mh <- mh_usage |>
+  dplyr::summarise(
+    r = cor(social_media_hours, mh_z, use = "complete.obs")
+  ) |>
+  dplyr::pull(r)
+
+# Base ggplot: scatter + regression line + nice theme ----------------------
+base_mh_social <- mh_usage |>
+  dplyr::filter(!is.na(social_media_hours), !is.na(mh_z)) |>
+  ggplot(aes(x = social_media_hours, y = mh_z, color = usage_group)) +
+  geom_point(alpha = 0.4, size = 1.8) +
+  geom_smooth(
+    method    = "lm",
+    se        = TRUE,
+    color     = "black",
+    linewidth = 0.9
+  ) +
+  scale_color_viridis_d(option = "plasma", end = 0.9) +
   labs(
-    title = "Overall Mental Health Difficulty vs Social Media Use",
-    x     = "Daily social media time (hours)",
-    y     = "Overall mental health index"
+    title    = "Mental Health Difficulty vs Social Media Use",
+    subtitle = paste0(
+      "Correlation between social media hours and normalized MH index: r ≈ ",
+      round(cor_mh, 2)
+    ),
+    x        = "Daily social media time (hours)",
+    y        = "Normalized mental health difficulty",
+    color    = "Usage group"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 16),
+    plot.subtitle    = element_text(size = 11, margin = margin(b = 8)),
+    legend.position  = "bottom",
+    panel.grid.minor = element_blank()
   )
 
+# Add marginal density plots (advanced ggplot extension) -------------------
+p_mh_social_marginal <- ggExtra::ggMarginal(
+  base_mh_social,
+  type      = "density",  # or "histogram"
+  groupFill = TRUE,
+  alpha     = 0.5
+)
 
+p_mh_social_marginal
 
 ```
-
 ::: {.indent-block-tab}
 When I normalize anxiety, stress, and depression into a single composite index, the relationship with social media use still trends upwards. 
 :::
+```{r}
+# Country-level summary using normalized MH index (mh_z)
+country_summary <- mh_usage |>
+  filter(
+    !is.na(country),
+    !is.na(social_media_hours),
+    !is.na(mh_z)
+  ) |>
+  group_by(country) |>
+  summarise(
+    mean_social_hours  = mean(social_media_hours, na.rm = TRUE),
+    mean_mh_z          = mean(mh_z,               na.rm = TRUE),
+    .groups            = "drop"
+  ) |>
+  arrange(mean_social_hours)
+
+cat("Table 12: Country-level social media use and normalized mental health (mh_z)\n")
+country_summary
+```
+::: {.indent-block-tab}
+In this table I show a list of countries their mean social media hours and the normalized average mental health score.
+:::
+
+
 
 ```{r}
 #STATISTICAL TESTS 
@@ -546,9 +736,57 @@ anxiety_ttest <- mh_hi_lo |>
 cat(" Test 3. Two-sample t-test for anxiety: high vs low social media users\n")
 anxiety_ttest
 ```
-
 ::: {.indent-block-tab}
 **Test 3 high vs low usage on anxiety:** The two-sample t-test compares mean anxiety between high and low social media users. The estimated difference is positive, showing that high usage users report higher anxiety on average than low usage users.
+:::
+
+```{r}
+# Lowest- and highest-usage countries based on social media hours
+low_country  <- country_summary |> slice_min(mean_social_hours, n = 1)
+high_country <- country_summary |> slice_max(mean_social_hours, n = 1)
+
+low_country
+high_country
+```
+
+
+```{r}
+country_map <- country_summary |>
+  mutate(
+    iso3 = countrycode(
+      sourcevar   = country,
+      origin      = "country.name",
+      destination = "iso3c"
+    )
+  ) |>
+  # drop countries we couldn't match to an ISO3 code
+  filter(!is.na(iso3))
+plot_ly(
+  country_map,
+  type      = "choropleth",
+  locations = ~iso3,                    # ISO3 country codes
+  z         = ~mean_mh_z,               # value to color by
+  colorscale   = "RdBu",
+  reversescale = TRUE,                  # red = worse, blue = better
+  text = ~paste0(
+    country,
+    "<br>Avg social media: ", round(mean_social_hours, 1), " hrs/day",
+    "<br>Avg MH index (mh_z): ", round(mean_mh_z, 2)
+  ),
+  hoverinfo = "text"
+) |>
+  layout(
+    title = "Normalized mental health difficulty by country",
+    geo = list(
+      showframe      = FALSE,
+      showcoastlines = FALSE,
+      projection     = list(type = "equirectangular")
+    )
+  )
+```
+
+::: {.indent-block-tab}
+At the country level, the **lowest-usage country** is `r low_country$country` (≈ `r round(low_country$mean_social_hours, 1)` hours/day, `mh_z` ≈ `r round(low_country$mean_mh_z, 2)`), while the **highest-usage country** is `r high_country$country` (≈ `r round(high_country$mean_social_hours, 1)` hours/day, `mh_z` ≈ `r round(high_country$mean_mh_z, 2)`). This suggest that countries with heavier social media use also tend to have worse overall mental health.
 :::
 
 ## Conclusion
@@ -561,5 +799,7 @@ When I group people into **low**, **medium**, and **high** social media users, t
 
 The two-sample t-test comparing anxiety in high vs. low social media users also supports the current evidence. The estimated difference in mean anxiety is about `r round(anxiety_ttest$estimate, 2)` points, with a 95% confidence interval from `r round(anxiety_ttest$lower_ci, 2)` to `r round(anxiety_ttest$upper_ci, 2)` and a p-value of `r signif(anxiety_ttest$p_value, 3)`. This tells us that high social media users are more anxious on average than low users.
 
-My final conclusion is: **in these three data sets, more social media use goes hand-in-hand with more mental health difficulties**. It supports the idea that rising social media use is part of a setting where anxiety, stress, and depression are becoming more common.
+My final conclusion is: **in these three data sets, more social media use goes hand-in-hand with more mental health difficulties**. This directly supports our overarching question: **“How is social media usage associated with indicators of anxiety, depression, and attention difficulties among young adults worldwide?”** and our specific question; by showing a clear, consistent link between heavier use and worse anxiety/depression outcomes.
 :::
+
+
