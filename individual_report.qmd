@@ -786,7 +786,7 @@ plot_ly(
 ```
 
 ::: {.indent-block-tab}
-At the country level, the **lowest-usage country** is `r low_country$country` (≈ `r round(low_country$mean_social_hours, 1)` hours/day, `mh_z` ≈ `r round(low_country$mean_mh_z, 2)`), while the **highest-usage country** is `r high_country$country` (≈ `r round(high_country$mean_social_hours, 1)` hours/day, `mh_z` ≈ `r round(high_country$mean_mh_z, 2)`). This suggest that countries with heavier social media use also tend to have worse overall mental health.
+At the country level, the **lowest usage country** is `r low_country$country` (≈ `r round(low_country$mean_social_hours, 1)` hours/day, `mh_z` ≈ `r round(low_country$mean_mh_z, 2)`), while the **highest usage country** is `r high_country$country` (≈ `r round(high_country$mean_social_hours, 1)` hours/day, `mh_z` ≈ `r round(high_country$mean_mh_z, 2)`). This suggest that countries with heavier social media use also tend to have worse overall mental health.
 :::
 
 ## Conclusion
