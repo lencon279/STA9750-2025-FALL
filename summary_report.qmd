@@ -11,9 +11,9 @@ format:
       light: cosmo
       dark: darkly
     df-print: paged
-    code-fold: true
+    code-fold: false
 execute:
-  echo: true
+  echo: false
   message: false
   warning: false
   cache: true
@@ -38,6 +38,20 @@ count_words <- function(url) {
 }
 
 ```
+## Individual Reports
+::: {.indent-block-tab}
+
+- [Can Social Media Habits (platform, usage hours, content type) predict emotional well-being?](https://aratikalor26.github.io/STA9750-2025-FALL/final-project-individual-specific-question.html)
+
+- [How does excessive daily social media use influence students’ academic performance?](https://rashika-auti.github.io/STA9750-2025-FALL/course_project_sq2.html)
+
+- [How are mental health and social media addiction scores different across Facebook, Instagram, and TikTok users?](https://rohansamavedam.github.io/STA9750-2025-FALL/final-project-individual-specific-question.html)
+
+- [Have mental health difficulties risen alongside global social media use?](https://lencon279.github.io/STA9750-2025-FALL/individual_report.html)
+
+- [Do different levels of social media use associate with different mental health outcomes across users?](https://bh2xj.github.io/STA9750-2025-FALL/Final_Individual.html)
+
+:::
 
 
 ## Introduction
