@@ -53,7 +53,7 @@ This final summary pulls those pieces together into a single story. We briefly d
 
 :::
 
-## Individual Reports
+## Specific Questions
 ::: {.indent-block-tab}
 
 - [Can Social Media Habits (platform, usage hours, content type) predict emotional well-being?](https://aratikalor26.github.io/STA9750-2025-FALL/final-project-individual-specific-question.html)
