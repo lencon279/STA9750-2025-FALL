@@ -139,6 +139,10 @@ Together, these analyses collectively address the overarching question by connec
 </div>
 >This plot looks at how **mindfulness time** and **social media use** interact for mental health. Across all three groups, students who spend more minutes on mindfulness per day tend to have **higher mental health scores**, but at every mindfulness level the **low social media** group scores highest, the **medium** group is in the middle, and the **high-use** group scores lowest. That suggests mindfulness helps everyone, but heavy social media users still report worse mental health overall, even when they practice a lot of mindfulness.
 
+<div style="text-align:center;">
+![](images/summary_report_viz_5.png){width=65%}
+</div>
+> This visualization shows that mental health scores are pretty similar across different social media platforms, whether its the use of Facebook, Instagram, or TikTok as their main application. This supports the idea that increased social media use in general is linked to mental health difficulties, instead of the effect being driven by just one bad platform. However just looking at this we can see that Facebook has a linkage to higher mental health scores while Tik Tok has the lower end. The data is telling us that even though all platforms contribute to mental health. The lower scores lean toward Tik Tok.
 
 ## How Our Findings Connect to Existing Research
 ::: {.indent-block-tab}
