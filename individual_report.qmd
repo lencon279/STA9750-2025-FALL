@@ -69,6 +69,18 @@ library(viridis)
 library(ggrepel)
 library(ggExtra)
 ```
+```{r}
+count_words <- function(url) {
+  library(rvest)
+  library(stringi)
+  
+  read_html(url) |>
+    html_elements("main p") |>
+    html_text() |>
+    stri_count_words() |>
+    sum()
+}
+```
 
 
 ```{r}
@@ -799,7 +811,7 @@ When I group people into **low**, **medium**, and **high** social media users, t
 
 The two-sample t-test comparing anxiety in high vs. low social media users also supports the current evidence. The estimated difference in mean anxiety is about `r round(anxiety_ttest$estimate, 2)` points, with a 95% confidence interval from `r round(anxiety_ttest$lower_ci, 2)` to `r round(anxiety_ttest$upper_ci, 2)` and a p-value of `r signif(anxiety_ttest$p_value, 3)`. This tells us that high social media users are more anxious on average than low users.
 
-My final conclusion is: **in these three data sets, more social media use goes hand-in-hand with more mental health difficulties**. This directly supports our overarching question: **“How is social media usage associated with indicators of anxiety, depression, and attention difficulties among young adults worldwide?”** and our specific question; by showing a clear, consistent link between heavier use and worse anxiety/depression outcomes.
+My final conclusion is: **in these three data sets, more social media use goes hand in hand with more mental health difficulties**. This directly supports our overarching question: **“How is social media usage associated with indicators of anxiety, depression, and attention difficulties among young adults worldwide?”** and our specific question; by showing a clear, consistent link between heavier use and worse anxiety or depression outcomes.
 :::
 
 
